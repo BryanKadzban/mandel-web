@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html>
+	<head>
+		<script src="big.min.js"></script>
+		<script>
+			var gl, prog;
+			var buffers = {}, attributes = {}, textures = {};
+
+			Array.prototype.foreach = function(fn, start, limit) {
+				if (start === undefined) start = 0;
+				if (limit === undefined) limit = this.length;
+
+				for (var i=start; i<limit; i++) {
+					fn(this[i], i);
+				}
+			}
+
+			function getShader(gl, id) {
+				var shaderScript = document.getElementById(id);
+				var shader = null;
+
+				if (!shaderScript) return null;
+
+				if (shaderScript.type == 'x-shader/x-fragment') {
+					shader = gl.createShader(gl.FRAGMENT_SHADER);
+				} else if (shaderScript.type == 'x-shader/x-vertex') {
+					shader = gl.createShader(gl.VERTEX_SHADER);
+				} else {
+					return null;
+				}
+
+				var currentChild = shaderScript.firstChild;
+				var source = "";
+
+				while (currentChild) {
+					if (currentChild.nodeType == currentChild.TEXT_NODE) {
+						source += currentChild.textContent;
+					}
+					currentChild = currentChild.nextSibling;
+				}
+
+				gl.shaderSource(shader, source);
+				gl.compileShader(shader);
+
+				if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+					alert('Error compiling ' + id + ' shader: ' + gl.getShaderInfoLog(shader));
+					return null;
+				}
+
+				return shader;
+			}
+
+			// Returns a list of lists; first list is the attribute locations,
+			// second list is the uniform locations
+			function initShaders(gl) {
+				var vert = getShader(gl, "vert-shader"),
+				    frag = getShader(gl, "frag-shader");
+
+				prog = gl.createProgram();
+
+				gl.attachShader(prog, vert);
+				gl.attachShader(prog, frag);
+				gl.linkProgram(prog);
+
+				if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+					alert('Link failed: ' + gl.getProgramInfoLog(prog));
+				}
+
+				gl.useProgram(prog);
+
+				// XXX
+				var attrs = {
+					attrs: {
+						opaque: {
+							pos: gl.getAttribLocation(prog, 'pos'),
+							uv: gl.getAttribLocation(prog, 'uv'),
+						},
+					},
+					uniforms: {
+						opaque: {
+							tex: gl.getUniformLocation(prog, 'texture'),
+						},
+					},
+				};
+
+				gl.enableVertexAttribArray(attrs.attrs.opaque.pos);
+				gl.enableVertexAttribArray(attrs.attrs.opaque.uv);
+
+				return attrs;
+			}
+
+			// Returns the list of buffers
+			function initBuffers(gl) {
+				var bufs = {
+					vert: gl.createBuffer(),
+				}, vertex_f32 = new Float32Array(
+					[-1, -1, 0,
+					  1, -1, 0,
+					  1,  1, 0,
+					 -1,  1, 0]
+				);
+
+				gl.bindBuffer(gl.ARRAY_BUFFER, bufs.vert);
+				gl.bufferData(gl.ARRAY_BUFFER, vertex_f32, gl.STATIC_DRAW);
+
+				return bufs;
+			}
+
+			function initTextures(gl) {
+				var texs = {
+					palette: gl.createTexture(),
+				};
+
+				var hue2rgb = function(hue) {
+					// hue from 0 to 1023
+
+					var conv = function(hue) {
+						var temp = (hue * 6.0 / 1024) % 2 - 1;
+						if (temp < 0) temp = -temp;
+						return (1 - temp) * 256 - 1;
+					}
+
+					rgb = new Uint8Array(4);
+					rgb[3] = 255;
+					var hex = hue * 6 / 1024;
+					if (hex < 2) {
+						rgb[2] = 0;
+						if (hex < 1) {
+							rgb[0] = 255;
+							rgb[1] = conv(hue);
+						} else {
+							rgb[0] = conv(hue);
+							rgb[1] = 255;
+						}
+					} else if (hex < 4) {
+						rgb[0] = 0;
+						if (hex < 3) {
+							rgb[1] = 255;
+							rgb[2] = conv(hue);
+						} else {
+							rgb[1] = conv(hue);
+							rgb[2] = 255;
+						}
+					} else {
+						rgb[1] = 0;
+						if (hex < 5) {
+							rgb[0] = conv(hue);
+							rgb[2] = 255;
+						} else {
+							rgb[0] = 255;
+							rgb[2] = conv(hue);
+						}
+					}
+					return rgb;
+				}
+
+				pal = new Uint8Array(1024 * 4);
+				pal.set([0,0,0,255], 0);
+				pal.set([0,0,0,255], 4);
+				for (var i = 2; i < 1024; i++) {
+					color = hue2rgb(i);
+					pal.set(color, i * 4);
+				}
+
+				if (true) {
+					var tex_canvas = document.getElementById('texture2');
+					tex_canvas.width = 1024;
+					tex_canvas.height = 64;
+					var ctx = tex_canvas.getContext('2d');
+					var imgdata = ctx.getImageData(0, 0, 1024, 64);
+					for (var i=0; i<64; i++) {
+						imgdata.data.set(pal, i*1024*4);
+					}
+					ctx.putImageData(imgdata, 0, 0);
+				}
+
+				gl.bindTexture(gl.TEXTURE_2D, texs.palette);
+				gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+				gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+				gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+				gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+				gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1024, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, pal);
+
+				return texs;
+			}
+
+			function start() {
+				var canvas = document.getElementById("glcanvas");
+				gl = null;
+				try {
+					gl = canvas.getContext("webgl") || canvas.getContext("experimental-webgl");
+				}
+				catch(e) {alert(e);}
+
+				if (!gl) {
+					alert("Can't get \"webgl\" context from canvas; maybe no WebGL support?");
+					return;
+				}
+
+				gl.clearColor(0, 0, 0, 1.0);
+				gl.clear(gl.COLOR_BUFFER_BIT);
+
+				attributes = initShaders(gl);
+				buffers = initBuffers(gl);
+				textures = initTextures(gl);
+
+				gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+
+				// Do I really need this extra scope?  Eh, why not.
+				(function() {
+					var requestAnimationFrame = (window.requestAnimationFrame ||
+					                             window.mozRequestAnimationFrame ||
+					                             window.webkitRequestAnimationFrame ||
+					                             window.msRequestAnimationFrame);
+					window.requestAnimationFrame = requestAnimationFrame;
+				})();
+				//window.requestAnimationFrame(drawScene);
+			}
+
+			var fpstimestamp = null;
+			var frames = 0;
+
+			function drawScene(timestamp) {
+				if (fpstimestamp !== null) {
+					if (timestamp - fpstimestamp > 1000) {
+						document.getElementById('fps').firstChild.textContent = frames.toFixed(0);
+						fpstimestamp = timestamp;
+						frames = 0;
+					}
+				} else {
+					fpstimestamp = timestamp;
+				}
+
+				gl.clear(gl.COLOR_BUFFER_BIT);
+
+				gl.activeTexture(gl.TEXTURE0);
+				gl.bindTexture(gl.TEXTURE_2D, textures.palette);
+				gl.uniform1i(attributes.uniforms.opaque.tex, 0);
+
+				gl.bindBuffer(gl.ARRAY_BUFFER, buffers.vert);
+				gl.vertexAttribPointer(attributes.attrs.opaque.pos, 3, gl.FLOAT, false, 0, 0);
+
+				gl.drawArrays(gl.TRIANGLE_FAN, 0, 4);
+
+				if (false) {
+					var tex_canvas = document.getElementById('texture2');
+					tex_canvas.width = 1024;
+					tex_canvas.height = 1024;
+					var ctx = tex_canvas.getContext('2d');
+					var imgdata = ctx.getImageData(0, 0, 1024, 1024);
+					var data = new Uint8Array(1024 * 1024 * 4);
+					gl.readPixels(0, 0, 1024, 1024, gl.RGBA, gl.UNSIGNED_BYTE, data);
+					imgdata.data.set(data);
+					ctx.putImageData(imgdata, 0, 0);
+				}
+
+				window.requestAnimationFrame(drawScene);
+
+				frames++;
+			}
+
+			const X = new Big(0.0), Y = new Big(0.0);
+
+			function mandelIter(x, y, n) {
+				var xsubi = x, ysubi = y;
+				for (var i=0; i<n; i++) {
+					//mnplus1 = mn*mn + m0
+					var xsubiplus1 = xsubi.times(xsubi).minus(ysubi.times(ysubi)).plus(x),
+						ysubiplus1 = xsubi.times(ysubi).times(2).plus(y);
+					xsubi = xsubiplus1;
+					ysubi = ysubiplus1;
+				}
+				return xsubi.times(xsubi).plus(ysubi.times(ysubi));
+			}
+		</script>
+	</head>
+	<body onload="start()">
+		<canvas id="glcanvas" width="800" height="600">
+		Your browser doesn't appear to support the HTML5 <code>&lt;canvas&gt;</code> element.
+		</canvas>
+		<p><span id="fps">???</span> FPS, <span id="debug"></span></p>
+		<canvas id="texture" width="256" height="256">
+		</canvas>
+		<canvas id="texture2" width="1024" height="64">
+		</canvas>
+		<canvas id="texture3" width="1024" height="1024">
+		</canvas>
+		<script type="x-shader/x-vertex" id="vert-shader">
+			#version 100
+
+			attribute vec3 pos;
+			attribute vec2 uv;
+
+			varying lowp vec2 vUV;
+
+			void main(void) {
+				gl_Position = vec4(pos, 1.0);
+				vUV = vec2(0,0);
+			}
+		</script>
+		<script type="x-shader/x-fragment" id="frag-shader">
+			#version 100
+
+			varying lowp vec2 vUV;
+
+			uniform sampler2D texture;
+
+			void main(void) {
+				lowp vec4 color = texture2D(texture, vUV);
+
+				gl_FragColor = color;
+			}
+		</script>
+	</body>
+</html>
